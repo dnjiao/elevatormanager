@@ -163,14 +163,21 @@ class ElevatorManager:
 
         trajectory = np.array(trajectory)
         simplified = rdp(trajectory, 0.1)
-        rs_df = self.find_plateaus(pressures, simplified, slope_thresh, labels)
-        sorted_pressures = np.sort(rs_df['Mean'])[::-1]
-        max_std = np.max(rs_df['STD'])
+        plat_df = self.find_plateaus(pressures, simplified, slope_thresh, labels)
+        top_floor_idx = plat_df['Mean'].idxmin()
+        plat_df = plat_df.iloc[:top_floor_idx]
+        max_std = np.max(plat_df['STD'])
+        pressures = plat_df['Mean'].values
         deltas = []
-        base_pres = sorted_pressures[0]
-        for i in range(1, len(rs_df)):
-            delta = base_pres - sorted_pressures[i]
+        base_pres = pressures[0]
+        prev_pres = base_pres
+        for i in range(1, len(pressures)):
+            curr_pres = pressures[i]
+            if curr_pres > prev_pres:
+                break
+            delta = base_pres - curr_pres
             deltas.append(delta)
+            prev_pres = curr_pres
         
         today = date.today()
         dt_str = today.strftime('%m/%d/%y')
