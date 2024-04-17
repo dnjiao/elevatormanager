@@ -208,27 +208,43 @@ class ElevatorManager:
                 pres = self.bp_default - float(d)
                 if abs(avg - pres) < std_2:
                     return self.floors[i + 1]
+                
+    def get_current_base_pressure(self, duration=1):
+        pressures = self.read_data_batch(duration=duration)
+        x = range(len(pressures))
+        y = self.conv_smooth_with_average(pressures)
+        trajectory = []
+        for i in range(len(x)):
+            trajectory.append((x[i], y[i]))
+
+        trajectory = np.array(trajectory)
+        simplified = rdp(trajectory, 0.1)
+        plat_df = self.find_plateaus(pressures, simplified, 0.005)
+        bp = plat_df.iloc[0]['Mean']
+        return bp
     
     def read_data_batch(self, freq=10, duration=-1):
         bus = smbus2.SMBus(PORT)
         bme280.load_calibration_params(bus, ADDRESS)
-        pressures = []
+        with open(DATA_FILE, 'w') as f:
+            f.write('index, pressure, timestamp\n')
         if duration == -1:
             stop_int = sys.maxsize
         else:
             stop_int = duration * freq
         for i in range(stop_int):
             bme280_data = bme280.sample(bus, ADDRESS)
-            humidity  = bme280_data.humidity
             pressure  = bme280_data.pressure
             ambient_temperature = bme280_data.temperature
-            print(humidity, pressure, ambient_temperature)
+            ts = datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%f')[:-2]
+            with open(DATA_FILE, 'a') as f:
+                f.write(f'{i}, {pressure}, {ts}\n')
+                print(pressure)
             sleep(1/freq)
     
     def read_data_batch_virtual(self, freq=10, duration=-1):
         with open(DATA_FILE, 'w') as f:
             f.write('index, pressure, timestamp\n')
-        pressures = []
         if duration == -1:
             stop_int = sys.maxsize
         else:
@@ -250,10 +266,30 @@ class ElevatorManager:
 
 if __name__ == '__main__':
     p = ArgumentParser()
-    p.add_argument('-c', '--calib', action='store_true')
+    p.add_argument('-r', '--record', action='store_true')
+    p.add_argument('-c', '--calibrate', action='store_true')
     p.add_argument('-d', '--detect', action='store_true')
+    p.add_argument('-k', '--kill', action='store_true')
     args = p.parse_args()
-    print(args.foo)
+
+    em = ElevatorManager()
+    if args.record:
+        em.read_data_batch()
+    if args.kill:
+        em.kill_process('elevator_manager')
+    if args.calibrate:
+        try:
+            df = pd.read_csv(DATA_FILE)
+        except:
+            print(f'{DATA_FILE} does not exist.')
+            sys.exit()
+        pressures = df['pressure'].values
+        em.calibrate(pressures)
+    if args.detect:
+
+
+
+
         
 
 
