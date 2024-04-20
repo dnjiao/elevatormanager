@@ -1,14 +1,25 @@
 import threading
 import time
+from queue import Queue
+import random
 
-dataset = []
+class SensorQueue(Queue):
+    def __init__(self, maxsize):
+        super().__init__(maxsize)
+
+    def put(self, item):
+        if self.full():
+            self.get()
+        super().put(item)
+
+sq = SensorQueue(10)
 
 # Dummy function to simulate sensor data collection
 def collect_sensor_data():
     while True:
         # Replace this with actual sensor reading code
-        data = 10  # Dummy data for demonstration
-        dataset.append(data)
+        data = random.randint(1, 100)  # Dummy data for demonstration
+        sq.put(data)
         print("Collected data:", data)
         time.sleep(1/2)  # Simulate sensor reading every second
 
@@ -18,7 +29,11 @@ def process_data():
         # Replace this with actual data processing code
         # For demonstration, just print a message
         print("Processing data...")
-        print('Current', dataset)
+        lst = list(sq.queue)
+        q_len = len(lst)
+        print('queue size', q_len)
+        if q_len == 10:
+            print('Current', lst)
         time.sleep(2)  # Simulate processing taking 2 seconds
 
 def multi_thread():

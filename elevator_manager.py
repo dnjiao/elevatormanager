@@ -14,13 +14,16 @@ import bme280
 from time import sleep
 from argparse import ArgumentParser
 import random
-
+from queue import Queue
+import time
+import threading
 
 CONFIG_FILE = './config.ini'
 LOG_FILE = './logs/elevator_manager_log.txt'
 DATA_FILE = '/data/pressures.csv'
 PORT = 1
 ADDRESS = 0x76
+MAX_QUEUE_SIZE = 20
 
 # Set up logging
 rfh = RotatingFileHandler(
@@ -40,31 +43,33 @@ logging.basicConfig(
 )
 logger = logging.getLogger('elevator_manager')
 
+class SensorQueue(Queue):
+    def __init__(self, maxsize):
+        super().__init__(maxsize)
+
+    def put(self, item):
+        if self.full():
+            self.get()
+        super().put(item)
+
 class ElevatorManager:
 
     def __init__(self):
-        bp_default, deltas, std, floors = self.load_calibration()
-        self.bp_default = bp_default
-        self.deltas = deltas
-        self.std = std
-        self.floors = floors
-
+        self.bp_default = None
+        self.deltas = None
+        self.std = None
 
     def load_calibration(self):
         config = configparser.ConfigParser()
-        try:
-            config.read(CONFIG_FILE)
-        except:
-            logger.error('No config.ini found. Must run calibration first')
-            sys.exit()
+        config.read(CONFIG_FILE)
         bp_default = float(config['DEFAULT']['base_pres'])
         deltas_str = config['DEFAULT']['deltas']
         deltas = [float(x) for x in deltas_str[1:-1].split(',')]
         std = float(config['DEFAULT']['std_dev'])
-        floor_str = config['DEFAULT']['floors']
-        floors = [int(x) for x in floor_str[1:-1].split(',')]
 
-        return bp_default, deltas, std, floors
+        self.bp_default = bp_default
+        self.deltas = deltas
+        self.std = std
     
     def smooth(self, arr, span): 
         return np.convolve(arr, np.ones(span * 2 + 1) / (span * 2 + 1), mode='same')
@@ -203,11 +208,11 @@ class ElevatorManager:
             avg = (sy[cnt-1] + sy[cnt-2]) / 2
             print(avg)
             if abs(avg - bp_current)  < std_2:
-                return self.floors[0]
+                return 0
             for i, d in enumerate(self.deltas):
                 pres = self.bp_default - float(d)
                 if abs(avg - pres) < std_2:
-                    return self.floors[i + 1]
+                    return i + 1
                 
     def get_current_base_pressure(self, duration=1):
         pressures = self.read_data_batch(duration=duration)
@@ -235,7 +240,6 @@ class ElevatorManager:
         for i in range(stop_int):
             bme280_data = bme280.sample(bus, ADDRESS)
             pressure  = bme280_data.pressure
-            ambient_temperature = bme280_data.temperature
             ts = datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%f')[:-2]
             with open(DATA_FILE, 'a') as f:
                 f.write(f'{i}, {pressure}, {ts}\n')
@@ -264,28 +268,52 @@ class ElevatorManager:
             os.kill(int(pid), signal.SIGKILL) 
         logger.info(f'{app_name} Successfully terminated')
 
-if __name__ == '__main__':
-    p = ArgumentParser()
-    p.add_argument('-r', '--record', action='store_true')
-    p.add_argument('-c', '--calibrate', action='store_true')
-    p.add_argument('-d', '--detect', action='store_true')
-    p.add_argument('-k', '--kill', action='store_true')
-    args = p.parse_args()
+squeue = SensorQueue(MAX_QUEUE_SIZE)
 
+def collect_sensor_data(freq=10):
+    while True:
+        bus = smbus2.SMBus(PORT)
+        bme280.load_calibration_params(bus, ADDRESS)
+        bme280_data = bme280.sample(bus, ADDRESS)
+        squeue.put(bme280_data.pressure)
+        time.sleep(1/freq)
+
+def process_sensor_data(em, bp):
+    while True:
+        lst = list(squeue.queue)
+        queue_len = len(lst)
+        if queue_len == 20:
+            status = em.get_elevator_status(bp, lst)
+            logger.info(f'Elevator status: {status}')
+            print(status)
+        time.sleep(1)
+
+
+if __name__ == '__main__':
+    
     em = ElevatorManager()
-    if args.record:
-        em.read_data_batch()
-    if args.kill:
-        em.kill_process('elevator_manager')
-    if args.calibrate:
-        try:
-            df = pd.read_csv(DATA_FILE)
-        except:
-            print(f'{DATA_FILE} does not exist.')
-            sys.exit()
-        pressures = df['pressure'].values
-        em.calibrate(pressures)
-    if args.detect:
+    if not os.path.exists(CONFIG_FILE):        
+        logger.warning('config.ini does not exist. Must calibration first')
+        if not os.path.exists(DATA_FILE):
+            em.read_data_batch()
+        data = pd.read_csv(DATA_FILE)
+        em.calibrate(data['pressure'].values)
+    em.load_calibration()
+
+    bp = em.get_current_base_pressure()
+
+    collect_thread = threading.Thread(target=collect_sensor_data)
+    process_thread = threading.Thread(target=process_sensor_data, args=(em, bp))
+
+    collect_thread.daemon = True
+    process_thread.daemon = True
+
+    collect_thread.start()
+    process_thread.start()
+
+    while True:
+        time.sleep(0.5)
+
 
 
 

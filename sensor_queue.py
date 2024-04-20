@@ -21,4 +21,4 @@ queue.put(3)
 queue.put(4)
 
 # Print the contents of the queue
-print(queue.queue)
+print(list(queue.queue))
